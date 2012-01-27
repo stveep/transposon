@@ -1,0 +1,157 @@
+require 'rubygems'
+require 'ostruct'
+require 'fastq'
+require 'md5'
+
+allruns = ["3502_5"]
+
+#locations of important binaries
+ssaha_pileup = "~/scripts/solexa/pileup_v0.5/ssaha_pileup/ssaha_pileup"
+ssaha2='/software/ssaha/ssaha2'
+
+#ssaha_pileup = "./ssaha_pileup"
+#ssaha2='~hp3/sw/arch/x86_64-linux/bin/ssaha2-2.4'
+
+#regex of the tag we want to pull out
+#tagregex = /^[TA][NA][NG][NG][GN]([TN][TN][AN][AN])/
+tagregex = /^TAGGG([GATC][GATC][GATC][GATC])/
+
+#This makes an array of filenames for each run - i.e. the paired ends
+task :process_fastq => allruns.map{|i| i+"_1.fastqsel"} + allruns.map{|i| i + "_2.fastqsel"}
+task :align1 => allruns.map{|i| i+"_1.sai"}
+task :align2 => allruns.map{|i| i+"_1.sam"}
+
+class PairFastq
+        def initialize(r1,r2)
+                @r1=r1
+                @r2=r2
+        end
+        def next
+                [@r1.next,@r2.next]
+        end
+        def has_next?
+                @r1.has_next? && @r2.has_next?
+        end
+        def each
+                while self.has_next?
+                        yield self.next
+                end
+        end
+end
+
+#Better to do this with bwa/samtools after mapping?
+#Remove PCR dupes:
+#rule(/_1.fastqde/ => 
+#     [proc {|task_name| task_name.sub(/de$/,'') },
+#     proc {|task_name| task_name.sub(/_1.fastqde$/,'_2.fastq') }]) do |t|
+#        #This code is SO SLOW you should probably use something else
+#        puts(t.prerequisites[0])
+#        r1= Fastq.new(t.prerequisites[0])
+#        r2 = Fastq.new(t.prerequisites[1])
+#        o1=File.new(t.prerequisites[0]+"dedupe.tmp","w")
+#        o2=File.new(t.prerequisites[1]+"dedupe.tmp","w")
+#        pair = PairFastq.new(r1,r2)
+#        seen={}
+#        pair.each do |rp|
+#                rphash = rp[0].seq + "," + rp[1].seq
+#                if seen[rphash] == nil
+#                        seen[rphash]=1
+#                        o1.puts(rp[0].to_s)
+#                        o2.puts(rp[1].to_s)
+#                end
+#        end
+#        mv(t.prerequisites[0]+"dedupe.tmp",t.prerequisites[0]+"de")
+#        mv(t.prerequisites[1]+"dedupe.tmp",t.prerequisites[1]+"de")
+#end
+
+
+# Changed to fastq from fastqde, as we don't dedupe for single ends
+rule '.fastqclip' => '.fastq' do |t|
+ f = Fastq.new(t.prerequisites[0])
+ out = File.new(t.name + ".tmp","w")
+ if (t.name =~ /_1.fastq/)
+         #So, please trim all read 1s that have AGATCGGAAGAG - i.e. at the point
+         #that the sequence becomes this, remove all the bases that follow.
+         seq = /AGATCGGAAGAG.*/
+ else
+         #For these sequences, read 2 will need to be trimmed back too. This will
+         #start with mouse sequence, and will then run into the transposon
+         #sequence: TTAACCCTAGAAAG . . . .
+         seq = /TTAACCCTAGAAAG.*/
+
+ end
+         f.each{|r|
+                 if (r.seq =~ seq)
+                         clip = seq.match(r.seq).begin(0)
+                         if clip > 0
+                                 out.puts(r.name.chomp + "\n" + r.seq[0..clip] + "\n+\n" + r.qual[0..clip])   
+                         else
+                                 out.puts(r.name.chomp + "\n" + "NNNN" + "\n+\n" +  "!!!!")
+                         end
+                 else
+                         out.puts(r.name.chomp + "\n" + r.seq + "\n+\n" + r.qual) 
+                 end
+
+         }
+         mv(t.name+".tmp",t.name)
+end
+
+def fastqout(out,record)
+        out.puts(record.name.chomp + "\n" + record.seq + "\n+\n" + record.qual)
+end
+
+#Select the sequences that start with the tag
+rule(/_1.fastqsel$/ => [
+     proc {|task_name| task_name.sub(/.fastqsel$/,'.fastqclip') }
+     ]) do |t|
+             f = Fastq.new(t.prerequisites[0])
+             out = File.new(t.name + ".tmp","w")
+             f.each{|r|
+			if (r.seq =~ tagregex)
+				clip = tagregex.match(r.seq).begin(0) + 5
+# Extra sub cmd trims off the the first part of tag to just leave ttaa
+                     out.puts(r.name.chomp + "\n" + r.seq[clip..-1] + "\n+\n" + r.qual[clip..-1])
+			end 
+             }
+             mv(t.name+".tmp",t.name)
+     end
+
+
+
+#remove sequences in _2 that aren't in _1
+rule(/_2.fastqsel$/ => [
+     proc {|task_name| task_name.sub(/.fastqsel$/,'.fastqclip') },
+     proc {|task_name| task_name.sub(/_2.fastqsel$/,'_1.fastqsel') }
+     ]) do |t|
+             f1 = Fastq.new(t.prerequisites[1])
+             f2 = Fastq.new(t.prerequisites[0])
+             out = File.new(t.name + ".tmp","w")
+             f1.each{|r1|
+               ok = false
+               while !ok
+                       r2 = f2.next
+                       if r1.name.sub(/\/1$/,"/2")==r2.name
+                               fastqout(out,r2)
+                               ok=true
+                       end
+               end
+             }
+             mv(t.name+".tmp",t.name)
+     end
+
+rule('.sai' => '.fastqsel') do |t|
+	sh "bsub -R'select[mem>3000] rusage[mem=3000]' -M3000000 -o #{t.name}-bwa1.otmp -e #{t.name}-bwa1.etmp '/software/solexa/bin/bwa aln ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} > #{t.name}'"
+end
+
+#Paired ends...
+#rule('.sam' => ['_1.sai','_2.sai','_1.fastqsel','_2.fastqsel']) do |t|
+#	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.e /software/solexa/bin/bwa sampe ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} #{t.prerequisites[2]} #{t.prerequisites[3]} > #{t.name}'"	
+#end
+
+rule('.sam' => ['.sai','.fastqsel']) do |t|
+	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.e '/software/solexa/bin/bwa samse ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} > #{t.name}'"	
+end
+
+rule('.cigar' => '.sam') do |t|
+	
+end
