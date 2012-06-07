@@ -3,8 +3,8 @@ require 'ostruct'
 require 'fastq'
 require 'md5'
 
-allruns = ["3502_5"]
-
+allruns = Dir.glob("../icr/*/R1.fastqsel")
+#allruns = ["../icr/Sample_TR5_3_45/R1.fastqsel"]
 #locations of important binaries
 ssaha_pileup = "~/scripts/solexa/pileup_v0.5/ssaha_pileup/ssaha_pileup"
 ssaha2='/software/ssaha/ssaha2'
@@ -18,8 +18,12 @@ tagregex = /^TAGGG([GATC][GATC][GATC][GATC])/
 
 #This makes an array of filenames for each run - i.e. the paired ends
 task :process_fastq => allruns.map{|i| i+"_1.fastqsel"} + allruns.map{|i| i + "_2.fastqsel"}
-task :align1 => allruns.map{|i| i+"_1.sai"}
-task :align2 => allruns.map{|i| i+"_1.sam"}
+#task :align1 => allruns.map{|i| i+"_1.sai"}
+#task :align2 => allruns.map{|i| i+"_1.sam"}
+
+#Changed for one off alignment of ICR processed files
+task :align1 => allruns.map{|i| i.sub(".fastqsel",".sai")}
+task :align2 => allruns.map{|i| i.sub(".fastqsel",".sam")}
 
 class PairFastq
         def initialize(r1,r2)
@@ -145,13 +149,21 @@ end
 
 #Paired ends...
 #rule('.sam' => ['_1.sai','_2.sai','_1.fastqsel','_2.fastqsel']) do |t|
-#	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.e /software/solexa/bin/bwa sampe ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} #{t.prerequisites[2]} #{t.prerequisites[3]} > #{t.name}'"	
+#	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.etmp /software/solexa/bin/bwa sampe ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} #{t.prerequisites[2]} #{t.prerequisites[3]} > #{t.name}'"	
 #end
 
 rule('.sam' => ['.sai','.fastqsel']) do |t|
-	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.e '/software/solexa/bin/bwa samse ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} > #{t.name}'"	
+	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.etmp '/software/solexa/bin/bwa samse ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} > #{t.name}'"	
+end
+
+# Mapping using smalt
+rule('.smalt' => [ proc {|taskname| taskname.sub('.smalt','_1.fastqsel')}\
+		,proc {|taskname| taskname.sub('.smalt','_2.fastqsel')}]) do |t|
+	sh "bsub -R'select[mem>6000] rusage[mem=6000]' -M6000000 -o #{t.name}-smalt.otmp -e #{t.name}-smalt.etmp /nfs/users/nfs_s/sp2/scratch/smalt-0.5.8/smalt_x86_64 map -f sam -o #{t.name} -i 1000 -j 20 -m 40 /nfs/users/nfs_s/sp2/scratch/hash_NCBI_M37 #{t.prerequisites[0]} #{t.prerequisites[1]}"	
 end
 
 rule('.cigar' => '.sam') do |t|
+
+
 	
 end

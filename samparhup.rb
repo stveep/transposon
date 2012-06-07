@@ -3,7 +3,7 @@
 # 
 #IL28_4748:6:1:1277:5450#6	0	chromosome:NCBIM37:11:1:121843856:1	30097625	37	48M	*	0	0	CTAGGGTCGTGTACCGTATGGCAGAAATAAAGCTTCAAAAAGCTCAAA	9?BCC=ACC@9ACCACCCC?A@B<ACABABBBBCCCAABBBBB.C(@9	XT:A:U	NM:i:2	X0:i:1	X1:i:0	XM:i:2	XO:i:0	XG:i:0	MD:Z:45C1G0
 require 'zlib'
-files = Dir.glob("nottaa-6_1.sam")
+files = Dir.glob("../icr/Sample_TR?_5/R1.sam")
 # Set coverage cutoff here:
 mincov = ARGV[0].to_i
 
@@ -40,10 +40,11 @@ files.each do |a|
 		elsif ((flag == 16) && (stupidchr =~ /NCBIM37:(\d+|[XY])/))
 			# Convert chromosome to something sensible
 			chr = $1
+			qstr = "-"
 			# Get the chromosomal position of the tTAA
-			cigar.match("(\d+)M")
-			adj = $1
-			pos = pos + adj.to_i - 3 - 1
+			#cigar.match("(\d+)M")
+			#adj = $1
+			pos = pos + seq.length - 3 - 1
 			# Make a hash key and increment
 			hkey = chr + qstr.to_s + pos.to_s
 			if hash[hkey] == nil
