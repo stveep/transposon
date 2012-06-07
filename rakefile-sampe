@@ -184,3 +184,15 @@ end
 rule('.cigar' => '.sam') do |t|
 	sh "bsub 'samtools view -bS #{t.prerequisites[0]} | samtools sort -o - - | samtools rmdup - - | samtools view -X - > #{t.name}'" 
 end
+
+#	Commands to organise into a table:
+rule('.table'	=> [ proc {|taskname| taskname.sub('.table','_PB5.cigar')}\
+	,proc {|taskname| taskname.sub('.table','_PB3.cigar')}]) do |t|
+#	Cigar parse to hashup
+
+#	Compare ends
+
+#	Build the table
+
+end
+
