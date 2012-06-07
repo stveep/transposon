@@ -9,9 +9,9 @@ require 'fastq'
 require 'md5'
 
 # Enter the stem filename for each run to process:
-allruns = ["5521_2","5521_1"]
-
-# Enter the tags that we expect:
+allruns = Dir.glob("/home/spettitt/data/transposon_pilot/*/R1.fq")
+puts allruns
+# Enter the tags that we expect, if splitting required:
 tags = [23,24,25,27,28,29,30,31]
 
 # These build the 'stem' filename, to be used after the lanes are split up by tag
@@ -21,9 +21,7 @@ allruns.each{|a| tags.each{|t| tagstems << a + "_" + t.to_s}}
 #locations of important binaries
 ssaha_pileup = "~/scripts/solexa/pileup_v0.5/ssaha_pileup/ssaha_pileup"
 ssaha2='/software/ssaha/ssaha2'
-
-#ssaha_pileup = "./ssaha_pileup"
-#ssaha2='~hp3/sw/arch/x86_64-linux/bin/ssaha2-2.4'
+bwa=
 
 #regex of the tag we want to pull out -- NB, this is the transposon sequence at the start of read 1 - different from the 'tag' that identifies the different multiplexed samples
 # TTAA captured to allow us to retain it
@@ -88,32 +86,6 @@ class PairFastq
                 end
         end
 end
-
-#Better to do this with bwa/samtools after mapping?
-#Remove PCR dupes:
-#rule(/_1.fastqde/ => 
-#     [proc {|task_name| task_name.sub(/de$/,'') },
-#     proc {|task_name| task_name.sub(/_1.fastqde$/,'_2.fastq') }]) do |t|
-#        #This code is SO SLOW you should probably use something else
-#        puts(t.prerequisites[0])
-#        r1= Fastq.new(t.prerequisites[0])
-#        r2 = Fastq.new(t.prerequisites[1])
-#        o1=File.new(t.prerequisites[0]+"dedupe.tmp","w")
-#        o2=File.new(t.prerequisites[1]+"dedupe.tmp","w")
-#        pair = PairFastq.new(r1,r2)
-#        seen={}
-#        pair.each do |rp|
-#                rphash = rp[0].seq + "," + rp[1].seq
-#                if seen[rphash] == nil
-#                        seen[rphash]=1
-#                        o1.puts(rp[0].to_s)
-#                        o2.puts(rp[1].to_s)
-#                end
-#        end
-#        mv(t.prerequisites[0]+"dedupe.tmp",t.prerequisites[0]+"de")
-#        mv(t.prerequisites[1]+"dedupe.tmp",t.prerequisites[1]+"de")
-#end
-
 
 # Changed to fastq from fastqde, as we don't dedupe here, but with samtools 
 rule '.fastqclip' => '.fastq' do |t|
@@ -180,7 +152,7 @@ rule(/_2.fastqsel$/ => [
                ok = false
                while !ok
                        r2 = f2.next
-                       if r1.name.sub(/\/1$/,"/2")==r2.name
+                       if r1.name.sub(/\s1:N/,"\s2:N")==r2.name
                                fastqout(out,r2)
                                ok=true
                        end
