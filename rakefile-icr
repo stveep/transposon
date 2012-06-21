@@ -15,6 +15,7 @@ destination = '/home/spettitt/data/japan_cispt/h3ls/'
 #sampleids = [1,2,3,4,5,8,9,11,12,13,14,15,16,17,18,19,20,21,22,23]
 sampleids = [16,17,18,19,20,21,22,23]
 allruns = sampleids.map{|id| destination+"5_"+id.to_s} + sampleids.map{|id| destination+"3_"+id.to_s}
+puts "Run IDs to be processed:\n"
 puts allruns
 # Enter the tags that we expect, if splitting required:
 tags = [23,24,25,27,28,29,30,31]
@@ -45,19 +46,30 @@ bothends=0
 
 #This makes an array of filenames for each run - i.e. the paired ends
 #All these are invoked just by generating the list of prereqs - this then calls the rules (below) to make those files
+desc "Clips adaptor/transposon sequence from the reads and selects only reads that start with the transposon tag.  Produces .fastqclip and .fastqsel files."
 task :process_fastq => allruns.map{|i| i+"_R1.fastqsel"} + allruns.map{|i| i + "_R2.fastqsel"}
+
+desc "Produce .sai files (1st step of alignment)"
 task :align1 => allruns.map{|i| i+"_R1.sai"} + allruns.map{|i| i+"_R2.sai"}
+
+desc "Produce .sam files (2nd step of alignment)"
 task :align2 => allruns.map{|i| i+".sam"}
 # Then run split_tags, below, followed by:
 # [Alt if manual tag split required] task :dedupe => tagstems.map{|i| i + ".cigar"}
+
+desc "Remove PCR duplicates from .sam files. Outputs .rmdup file (SAM format)"
 task :dedupe => allruns.map{|i| i+ ".rmdup"}
+
+desc "Collect reads mapping the same site, outputs .hashup file"
 task :hashup => allruns.map{|i| i+ ".hashup"}
+
 #task :comp => sampleids.map{|id| id.to_s+".comp"}
 # Comp defined further down
 #task :table => sampleids.map{|id| destination+id.to_s+".table"}
 # Likewise table
 
 # Exception: no rule for this task to split by tag, defined explicitly:
+desc "Split multiplexed reads to separate files by tag"
 task :split_tags =>  allruns.map{|a| a + ".sam"} do |t|
 	t.prerequisites.each do |p|
 	#i.e. each file is handled separately
@@ -286,6 +298,7 @@ end
 #rule('.comp'	=> [ proc {|taskname| "5_"+taskname.sub('.comp','.hashup')}\
 #	,proc {|taskname| "3_"+taskname.sub('.comp','hashup')}]) do |t|
 
+desc "Compares PB5 and PB3 ends, produces .comp file"
 task :comp do
 	Dir.chdir(destination)
 	files = Dir.glob('5_*.hashup')        
@@ -328,6 +341,7 @@ end
 
 #	Commands to organise into a table:
 # Needs to be a task
+desc "Creates a summary table from all .comp files in the directory"
 task :table do
 files = Dir.glob("*.comp")
 # Counter for file number
