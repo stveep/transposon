@@ -10,17 +10,20 @@ require 'md5'
 
 # Enter the stem filename for each run to process:
 # This version is for files of format 5_x_R1.fq where 5 = PB5, x = sample name, R1 = read 1.
+# The script will initially parse the fastq files in the directory specified below (so this can be read-only), but will use the "destination" directory for writing all subsequent files.
 directory = '/home/aangs/NGS/smallIO/NGS/FASTQ/SPettitt/'
 destination = '/home/spettitt/data/japan_cispt/h3ls/'
 #sampleids = [1,2,3,4,5,8,9,11,12,13,14,15,16,17,18,19,20,21,22,23]
 sampleids = [16,17,18,19,20,21,22,23]
+
+#This generates the list of filenames from the sample IDs - a 5', 3' for each
 allruns = sampleids.map{|id| destination+"5_"+id.to_s} + sampleids.map{|id| destination+"3_"+id.to_s}
 puts "Run IDs to be processed:\n"
 puts allruns
-# Enter the tags that we expect, if splitting required:
+# Enter the tags that we expect, if splitting required [Not used at ICR]:
 tags = [23,24,25,27,28,29,30,31]
 
-# These build the 'stem' filename, to be used after the lanes are split up by tag
+# These build the 'stem' filename, to be used after the lanes are split up by tag [Not used at ICR]
 tagstems = []
 allruns.each{|a| tags.each{|t| tagstems << a + "_" + t.to_s}}
 
@@ -33,7 +36,7 @@ bwaindex='/home/aangs/GENOME/mouse/mm_ens61_chr_and_MT.fa'
 
 #regex of the tag we want to pull out -- NB, this is the transposon sequence at the start of read 1 - different from the 'tag' that identifies the different multiplexed samples
 # TTAA captured to allow us to retain it
-tagregex = /^AGGG([TN]TA[AN])/
+tagregex = /^AGGG([TACG]TA[ATGC])/
 
 # Minimum (one end) read coverage for inclusion in the final output table:
 mincov=0
@@ -44,6 +47,7 @@ minq=20
 # Require sequences at both ends of the transposon when forming final summary table? 1 = yes
 bothends=0
 
+# To see a list of all the tasks with descriptions run: rake -T -f rakefile-icr
 #This makes an array of filenames for each run - i.e. the paired ends
 #All these are invoked just by generating the list of prereqs - this then calls the rules (below) to make those files
 desc "Clips adaptor/transposon sequence from the reads and selects only reads that start with the transposon tag.  Produces .fastqclip and .fastqsel files."
