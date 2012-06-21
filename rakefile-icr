@@ -1,0 +1,393 @@
+# Rakefile to handle processing, mapping and postprocessing of Illumina PB transposon reads (paired end)
+# Steve Pettitt (spettitt@gmail.com), modified from code by Ben Blackburne (Sanger Inst.)
+#
+
+require 'rubygems'
+require 'ostruct'
+# fastq.rb is a file from Ben, needs to be in same directory
+require '/home/spettitt/scripts/transposon/fastq'
+require 'md5'
+
+# Enter the stem filename for each run to process:
+# This version is for files of format 5_x_R1.fq where 5 = PB5, x = sample name, R1 = read 1.
+directory = '/home/aangs/NGS/smallIO/NGS/FASTQ/SPettitt/'
+destination = '/home/spettitt/data/japan_cispt/h3ls/'
+#sampleids = [1,2,3,4,5,8,9,11,12,13,14,15,16,17,18,19,20,21,22,23]
+sampleids = [16,17,18,19,20,21,22,23]
+allruns = sampleids.map{|id| destination+"5_"+id.to_s} + sampleids.map{|id| destination+"3_"+id.to_s}
+puts allruns
+# Enter the tags that we expect, if splitting required:
+tags = [23,24,25,27,28,29,30,31]
+
+# These build the 'stem' filename, to be used after the lanes are split up by tag
+tagstems = []
+allruns.each{|a| tags.each{|t| tagstems << a + "_" + t.to_s}}
+
+#locations of important binaries
+#ssaha_pileup = "~/scripts/solexa/pileup_v0.5/ssaha_pileup/ssaha_pileup"
+#ssaha2='/software/ssaha/ssaha2'
+bwa='/usr/local/bin/bwa'
+bwaindex='/home/aangs/GENOME/mouse/mm_ens61_chr_and_MT.fa'
+
+
+#regex of the tag we want to pull out -- NB, this is the transposon sequence at the start of read 1 - different from the 'tag' that identifies the different multiplexed samples
+# TTAA captured to allow us to retain it
+tagregex = /^AGGG([TN]TA[AN])/
+
+# Minimum (one end) read coverage for inclusion in the final output table:
+mincov=0
+
+# Minimum mapping quality to accept an individual read:
+minq=20
+
+# Require sequences at both ends of the transposon when forming final summary table? 1 = yes
+bothends=0
+
+#This makes an array of filenames for each run - i.e. the paired ends
+#All these are invoked just by generating the list of prereqs - this then calls the rules (below) to make those files
+task :process_fastq => allruns.map{|i| i+"_R1.fastqsel"} + allruns.map{|i| i + "_R2.fastqsel"}
+task :align1 => allruns.map{|i| i+"_R1.sai"} + allruns.map{|i| i+"_R2.sai"}
+task :align2 => allruns.map{|i| i+".sam"}
+# Then run split_tags, below, followed by:
+# [Alt if manual tag split required] task :dedupe => tagstems.map{|i| i + ".cigar"}
+task :dedupe => allruns.map{|i| i+ ".rmdup"}
+task :hashup => allruns.map{|i| i+ ".hashup"}
+#task :comp => sampleids.map{|id| id.to_s+".comp"}
+# Comp defined further down
+#task :table => sampleids.map{|id| destination+id.to_s+".table"}
+# Likewise table
+
+# Exception: no rule for this task to split by tag, defined explicitly:
+task :split_tags =>  allruns.map{|a| a + ".sam"} do |t|
+	t.prerequisites.each do |p|
+	#i.e. each file is handled separately
+		ohash = {}
+		# This creates a hash of filehandles to handle the different outputs
+		tags.each do |t| 
+			# Build the filename, key by tag number
+			ofile = p.sub(".sam","") + "_" + t.to_s + ".sam"
+			ohash[t.to_s] = File.open(ofile,'w')
+		end
+		# For any tags that weren't in the expected set
+		unexpected = []
+		file = File.open(p,'r')
+		sqlines = []
+		file.each do |l|
+			if (l =~ /@SQ/) 
+			# Lines starting SQ (contig identifier things) go to all output files
+				ohash.each {|k,v| v.puts l}
+				next
+			end
+			# Two-digit numeric tags preceded by hash - for others, change regexp here:
+			if (l =~ /#(\d\d)/)
+				if (ohash[$1])
+					ohash[$1].puts l
+				else
+					unexpected << $1
+				end
+			end	
+		end
+	end	
+
+end
+
+class PairFastq
+        def initialize(r1,r2)
+                @r1=r1
+                @r2=r2
+        end
+        def next
+                [@r1.next,@r2.next]
+        end
+        def has_next?
+                @r1.has_next? && @r2.has_next?
+        end
+        def each
+                while self.has_next?
+                        yield self.next
+                end
+        end
+end
+
+# Changed to fastq from fastqde, as we don't dedupe here, but with samtools 
+# This rule also has the effect of moving from the fastq storage directory to the working directory
+rule '.fastqclip' => [proc{|task_name| a = task_name.sub(destination,directory); a.sub('.fastqclip','.fq') }] do |t|
+ f = Fastq.new(t.prerequisites[0])
+ out = File.new(t.name + ".tmp","w")
+ if (t.name =~ /_R1.fq/)
+         #So, please trim all read 1s that have AGATCGGAAGAG - i.e. at the point
+         #that the sequence becomes this, remove all the bases that follow.
+         seq = /AGATCGGAAGAG.*/
+ else
+         #For these sequences, read 2 will need to be trimmed back too. This will
+         #start with mouse sequence, and will then run into the transposon
+         #sequence: TTAACCCTAGAAAG . . . .
+         seq = /TTAACCCTAGAAAG.*/
+
+ end
+         f.each{|r|
+                 if (r.seq =~ seq)
+                         clip = seq.match(r.seq).begin(0)
+                         if clip > 0
+                                 out.puts(r.name.chomp + "\n" + r.seq[0..clip] + "\n+\n" + r.qual[0..clip])   
+                         else
+                                 out.puts(r.name.chomp + "\n" + "NNNN" + "\n+\n" +  "!!!!")
+                         end
+                 else
+                         out.puts(r.name.chomp + "\n" + r.seq + "\n+\n" + r.qual) 
+                 end
+
+         }
+         mv(t.name+".tmp",t.name)
+end
+
+def fastqout(out,record)
+        out.puts(record.name.chomp + "\n" + record.seq + "\n+\n" + record.qual)
+end
+
+#Select the sequences that start with the tag
+rule(/_R1.fastqsel$/ => [
+     proc {|task_name| task_name.sub(/.fastqsel$/,'.fastqclip') }
+     ]) do |t|
+             f = Fastq.new(t.prerequisites[0])
+             out = File.new(t.name + ".tmp","w")
+             f.each{|r|
+			if (r.seq =~ tagregex)
+				clip = tagregex.match(r.seq).begin(0) + 4
+# Extra sub cmd trims off the the first part of tag to just leave ttaa
+                     out.puts(r.name.chomp + "\n" + r.seq[clip..-1] + "\n+\n" + r.qual[clip..-1])
+			end 
+             }
+             mv(t.name+".tmp",t.name)
+     end
+
+
+
+#remove sequences in _R2 that aren't in _R1
+rule(/_R2.fastqsel$/ => [
+     proc {|task_name| task_name.sub(/.fastqsel$/,'.fastqclip') },
+     proc {|task_name| task_name.sub(/_R2.fastqsel$/,'_R1.fastqsel') }
+     ]) do |t|
+             f1 = Fastq.new(t.prerequisites[1])
+             f2 = Fastq.new(t.prerequisites[0])
+             out = File.new(t.name + ".tmp","w")
+             f1.each{|r1|
+               ok = false
+               while !ok
+                       r2 = f2.next
+# Can change here to filter only reads that pass quality filter (only take Ns)
+# ICR read name format: @ILLUMINA-E67AF7:195:631GEAAXX:3:1:7860:1569 1:N:0:TAGTGACT
+			puts r1.name.sub(/(\S+)\s1(:[YN]\S+)/,"#{$1} 2#{$2}")
+			puts r2.name
+                       if r1.name.sub(/(\S+)\s1(:[YN]\S+)/,"#{$1} 2#{$2}")==r2.name	#Compare with name of read being considered
+                               fastqout(out,r2)
+                               ok=true
+                       end
+               end
+             }
+             mv(t.name+".tmp",t.name)
+end
+
+rule('.sai' => '.fastqsel') do |t|
+	sh "#{bwa} aln #{bwaindex} #{t.prerequisites[0]} > #{t.name}"
+end
+
+#Paired ends...
+rule('.sam' => [ proc {|taskname| taskname.sub('.sam','_R1.sai')}\
+		,proc {|taskname| taskname.sub('.sam','_R2.sai')}\
+		,proc {|taskname| taskname.sub('.sam','_R1.fastqsel')}\
+		,proc {|taskname| taskname.sub('.sam','_R2.fastqsel')}]) do |t|
+	f = File.new(t.name+".tmp","w")
+	f.puts "#{bwa} sampe #{bwaindex} #{t.prerequisites[0]} #{t.prerequisites[1]} #{t.prerequisites[2]} #{t.prerequisites[3]} > #{t.name}" 
+	f.close
+	#sh "qsub -N #{t.name} -l nodes=uv:ppn=8,mem=5gb -q ngs -m a -M spettitt@icr.ac.uk -o #{t.name+".otmp"} -e #{t.name+".etmp"} '#{bwa} sampe #{bwaindex} #{t.prerequisites[0]} #{t.prerequisites[1]} #{t.prerequisites[2]} #{t.prerequisites[3]} > #{t.name}'"	
+	sh "qsub -N #{t.name.sub(destination,'')} -l nodes=uv:ppn=8,mem=5gb -q ngs -m a -M spettitt@icr.ac.uk -o #{t.name+".otmp"} -e #{t.name+".etmp"} #{t.name+".tmp"}"	
+	sh "rm #{t.name+".tmp"}"
+end
+
+#(Single ends)
+#rule('.sam' => ['.sai','.fastqsel']) do |t|
+#	sh "bsub -R'select[mem>4000] rusage[mem=4000]' -M4000000 -o #{t.name}-bwa2.otmp -e #{t.name}-bwa2.e '/software/solexa/bin/bwa samse ~/scratch/bwa/NCBIM37-bwa.index #{t.prerequisites[0]} #{t.prerequisites[1]} > #{t.name}'"	
+#end
+#
+
+
+# Need to dedupe now, then convert to something readable
+rule('.rmdup' => '.sam') do |t|
+	# Minimum mapping quality enforced here:
+	sh "samtools view -bS -q #{minq} #{t.prerequisites[0]} | samtools sort -o - - | samtools rmdup - - | samtools view - > #{t.name} &" 
+end
+
+#	Cigar parse to hashup
+
+rule('.hashup'	=> '.rmdup') do |t|
+	a = t.prerequisites[0]
+        hash = {}
+        f = File.open(a,"r")
+	# Ind index allows reversal of orientation for PB5/PB3 to allow them to be combined later.
+	ind = 0
+	strands = ["+","-"]
+	if (a.sub(destination,'').match(/^5_/))
+		ind = 0
+	elsif (a.sub(destination,'').match(/^3_/))
+		ind = 1
+	else
+		echo "Warning: Files should be named 5_... or 3_... to identify transposon end.\n"
+	end
+	
+        while (line = f.gets)
+                (id, flag, chr, pos, mapq, cigar, rn, pn,tlen, seq, qual, junk) = line.split("\t")
+                pos = pos.to_i
+                flag = flag.to_i
+                mapq = mapq.to_i
+                #   Read 1 only and	mapped in pair
+                if (flag & 64 == 64 && flag & 2 == 2)
+			# If we're on the + strand
+			# Alt for stupid formatting:if ((flag & 16 != 16) && (stupidchr =~ /NCBIM37:(\d+|[XY])/))
+			if (flag & 16 != 16)
+				qstr = strands[ind]
+				# Get the chromosomal position of the tTAA
+				# It's already pos in this case
+				# Make a hash key and increment  key is chromosome[strand][position] eg. 5+123456, X-89101112
+				# Possible improvement: Could add the read IDs to this hash and store them somewhere in case required for reference later?  They can be identified by searching fastq file for pos, however.
+				hkey = chr + qstr.to_s + pos.to_s
+				if hash[hkey].nil? then hash[hkey] = 1	else hash[hkey] += 1	end
+			#Now minus strand mappings
+			else
+				# The strand is set to the opposite of the + strand PB5 mapping:
+				qstr = strands[ind-1]
+				# Get the chromosomal position of the tTAA
+				#cigar.match("(\d+)M")
+				#adj = $1
+				pos = pos + seq.length - 3 - 1
+				# Make a hash key and increment
+				hkey = chr + qstr.to_s + pos.to_s
+				if hash[hkey].nil? then hash[hkey] = 1	else hash[hkey] += 1	end
+
+			end
+                end
+
+        end
+	o = File.open(t.name,"w")
+	total = 0
+	# This applies minimum coverage for a given transposon integration site:
+	selected = hash.select {|k,v| v > mincov}
+	new = {}
+	selected.each {|a| new[a[0]] = a[1]}
+	hash = new
+	hash.each { |k, v| o.puts "#{k} #{v}" }
+	o.close
+end
+
+
+#	Compare ends
+
+# Doesn't work as a rule...?
+#rule('.comp'	=> [ proc {|taskname| "5_"+taskname.sub('.comp','.hashup')}\
+#	,proc {|taskname| "3_"+taskname.sub('.comp','hashup')}]) do |t|
+
+task :comp do
+	Dir.chdir(destination)
+	files = Dir.glob('5_*.hashup')        
+	files.each do |t|
+		hash = Hash.new{|h, k| h[k] = []}
+	# In the first version of this script, the files were 6 & 7 instead of 1 & 2 or 5&3 or sth sensible, retained for variable names:
+	# 6 = PB5, 7 = PB3 in this case, though doesn't matter
+		file6 = File.open(t,"r")
+		file7 = File.open(t.sub(/^5_/,"3_"),"r")
+		# The hash keys for the same insertion but different ends should have the same positions, just different strands, if generated with the rule above.
+		while (line = file6.gets)
+			(key, depth) = line.split(" ")
+			hash[key] << depth.to_i
+		end
+		while (line = file7.gets)
+			(key, depth) = line.split(" ")
+			# If this site was already seen, add 2nd end, else add a 'spacer' first.
+			if (hash.has_key?(key))
+				hash[key] << depth.to_i
+			else
+				hash[key] << 0
+				hash[key] << depth.to_i
+			end
+		end
+		o = File.open(t.sub('5_','').sub('.hashup','.comp'),"w")
+		hash.each do |k,v|
+			o.print "#{k} "
+			v.each {|i| o.print "#{i} "}
+			if (v.length == 1)
+	# Add zero for sites unique to first lane
+				o.print "0 "
+			end
+			o.print "\n"
+		end
+	end
+end
+
+
+
+
+#	Commands to organise into a table:
+# Needs to be a task
+task :table do
+files = Dir.glob("*.comp")
+# Counter for file number
+i = 1
+hash = {}
+files.each do |f|
+        input = File.open(f,'r')
+        input.each do |l|
+# Split into fields
+                (key, six, seven) = l.split(" ")
+# This line forces a match at both ends
+		if (bothends == 1)
+			next unless (six.to_i > 0 && seven.to_i > 0)
+		end
+
+# Use hash to associate coverage values array (PB5+3 ends) with site
+                if (hash[key])
+                hash[key] << [six,seven]
+                else
+                        hash[key] = []
+# If it's a new site, we can add if first file...
+                        if (i == 1)
+                                hash[key] << [six,seven]
+# ...if not, need to add an appropriate no. of zeroes first to keep table format
+                        else
+                                j = i-1
+                                j.times {hash[key] << [0,0]}
+                                hash[key] << [six,seven]
+                        end
+                end
+        end
+# Add zero array to any key that wasn't seen in this file
+        hash.each {|k,v| hash[k] << [0,0] if (v.length < i)}
+# That's enough looping through files
+        i += 1
+end
+
+
+
+# Output a table from the hash
+
+o = File.open("summary.csv", 'w')
+
+o.puts "chr,strand,pos," + files.join(",,") + ",,max"
+hash.each do |k,v|
+# Commented code is for getting site with maximum coverage.
+        # Go through hash, get mean coverage for both ends and output index of max coverage tag [need to normalise?]
+#        # v is array of pairs of read no. for each sample
+#        maxi = 0
+#        i = 0
+#        v.each do |c|
+#                # c is an individual pair of reads
+#                maxi = i if (c[0].to_i + c[1].to_i > v[maxi][0].to_i + v[maxi][1].to_i)
+#                i += 1
+#        end
+        o.print k.sub(/([\dXY]+)([\+-])(\d+)/,'\1,\2,\3,')
+        v.each {|a| o.print a[0].to_s + "," + a[1].to_s + ","}
+	o.print "\n"
+#        o.print files[maxi].sub(/4748_6-([ATGC]+).comp/,'\1') + "\n"
+end
+
+end
+
